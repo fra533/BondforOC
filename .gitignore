@@ -1,6 +1,6 @@
 data/ 
 gold_crossref_response.csv
 results.json
-src/failed_responses.json
-src/success_responses.json
+bondforoc/failed_responses.json
+bondforoc/success_responses.json
 results/
