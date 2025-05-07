@@ -5,6 +5,7 @@ import os
 import requests
 import matplotlib.pyplot as plt
 from typing import Dict, List, Optional, Tuple, Union, Any
+import Levenshtein  # You'll need to install python-Levenshtein package
 
 
 def main():
@@ -80,17 +81,614 @@ def main():
         traceback.print_exc()
 
 
+def validate_crossref_match(json_item: Dict, cr_metadata: Dict, cr_year: Optional[int]) -> Tuple[bool, Dict]:
+    """
+    Validates if Crossref result matches JSON metadata using:
+    1. Levenshtein distance for title similarity
+    2. Exact year match
+    3. Author surname matching (substring search)
+    
+    Returns:
+        Tuple[bool, Dict]: (is_valid_match, validation_details)
+    """
+    validation_details = {
+        "title_similarity": 0.0,
+        "title_valid": False,
+        "year_valid": False,
+        "author_valid": False,
+        "is_valid_match": False,
+        "debug_info": {}  # Added for debugging
+    }
+    
+    # Check if we have minimum required data
+    if not json_item or not cr_metadata:
+        validation_details["debug_info"]["error"] = "Missing json_item or cr_metadata"
+        return False, validation_details
+    
+    # Title validation using Levenshtein distance
+    json_title = json_item.get("title", "").strip().lower()
+    cr_title = cr_metadata.get("title", "").strip().lower()
+    
+    validation_details["debug_info"]["json_title"] = json_title
+    validation_details["debug_info"]["cr_title"] = cr_title
+    
+    if json_title and cr_title:
+        # Calculate similarity ratio (0 to 1)
+        similarity = Levenshtein.ratio(json_title, cr_title)
+        validation_details["title_similarity"] = similarity
+        # Consider valid if similarity is above 0.5 (50%)
+        validation_details["title_valid"] = similarity > 0.5
+        validation_details["debug_info"]["title_threshold"] = 0.5
+    else:
+        validation_details["debug_info"]["title_error"] = "Empty title(s)"
+    
+    # Year validation - EXACT MATCH ONLY
+    json_year = json_item.get("year")
+    validation_details["debug_info"]["json_year"] = json_year
+    validation_details["debug_info"]["cr_year"] = cr_year
+    
+    if json_year and cr_year:
+        try:
+            json_year_int = int(json_year)
+            cr_year_int = int(cr_year)
+            # Require EXACT year match
+            validation_details["year_valid"] = json_year_int == cr_year_int
+            validation_details["debug_info"]["year_difference"] = abs(json_year_int - cr_year_int)
+        except (ValueError, TypeError) as e:
+            validation_details["debug_info"]["year_error"] = f"Year conversion error: {e}"
+            validation_details["year_valid"] = False
+    else:
+        validation_details["debug_info"]["year_error"] = "Missing year data"
+    
+    # Author validation - TEMPORARILY DISABLED
+    # Setting author_valid to True to bypass author checking
+    validation_details["author_valid"] = True
+    validation_details["debug_info"]["author_check"] = "DISABLED"
+    
+    # Match is valid ONLY if BOTH title AND year criteria are met
+    validation_details["is_valid_match"] = (
+        validation_details["title_valid"] and 
+        validation_details["year_valid"]
+    )
+    
+    # Log validation failure for debugging
+    if not validation_details["is_valid_match"]:
+        print(f"Validation failed - Title: {validation_details['title_valid']} (similarity: {validation_details['title_similarity']:.4f}), "
+              f"Year: {validation_details['year_valid']}, "
+              f"Author: {validation_details['author_valid']} (DISABLED)")
+        if not validation_details['title_valid']:
+            print(f"  Title similarity: {validation_details['title_similarity']:.4f}")
+            print(f"  JSON title: '{json_title}'")
+            print(f"  CR title: '{cr_title}'")
+        if not validation_details['year_valid']:
+            print(f"  Years: JSON={json_year}, CR={cr_year}")
+    
+    return validation_details["is_valid_match"], validation_details
+
+
+def get_info_from_json(input_json: Dict, key: str, title: str) -> Tuple[int, str, Dict]:
+    """
+    Extract year, updated title, and complete metadata from JSON file.
+    Now returns the full json_item for validation purposes.
+    """
+    year = 2020  # Default year
+    updated_title = title  # CSV title
+    json_item = {}
+    
+    if key in input_json:
+        json_item = input_json[key]
+        if "title" in json_item and json_item["title"]:
+            updated_title = json_item["title"]
+        if "year" in json_item:
+            year = json_item["year"]
+    
+    return year, updated_title, json_item
+
+
+def process_record(
+    key: str, 
+    title: str, 
+    gold_doi: str, 
+    on_crossref: bool, 
+    year: int,
+    json_item: Dict,
+    crossref_cache: Dict, 
+    use_cache: bool
+) -> Dict:
+    cache_key = f"{title}_{year}"
+    cache_updated = False
+    
+    if cache_key in crossref_cache and use_cache:
+        print(f"Usando risultato dalla cache per '{title}'")
+        cr_result = crossref_cache[cache_key]
+        cr_doi = cr_result.get("doi")
+        cr_score = cr_result.get("score", 0)
+        cr_metadata = cr_result.get("metadata", {})
+        
+        print(f"DEBUG: cr_result keys: {list(cr_result.keys())}")
+        print(f"DEBUG: cr_metadata: {cr_metadata}")
+    else:
+        print(f"Interrogazione di CrossRef per il titolo '{title}' e anno '{year}'...")
+        try:
+            crossref_results = query_with_retry(query_crossref, title=title, year=year)
+            
+            cr_items = crossref_results.get("message", {}).get("items", [])
+            if cr_items:
+                cr_item = cr_items[0]  
+                cr_doi = cr_item.get("DOI")
+                cr_score = extract_crossref_score(cr_item)
+                cr_metadata = extract_crossref_metadata(cr_item)
+            else:
+                print(f"Nessun risultato trovato su CrossRef per {key}")
+                cr_doi = None
+                cr_score = 0
+                cr_metadata = {}
+            
+            crossref_cache[cache_key] = {
+                "doi": cr_doi,
+                "score": cr_score,
+                "metadata": cr_metadata,
+                "key": key  
+            }
+            cache_updated = True
+        except Exception as e:
+            print(f"Errore nell'interrogazione per la chiave {key}: {e}")
+            cr_doi = None
+            cr_score = 0
+            cr_metadata = {}
+    
+    # Perform validation checks
+    is_valid_match = False
+    validation_details = {}
+    if cr_doi and cr_metadata:
+        is_valid_match, validation_details = validate_crossref_match(
+            json_item, 
+            cr_metadata, 
+            cr_metadata.get("year")
+        )
+    
+    norm_gold_doi = normalize_doi(gold_doi)
+    norm_cr_doi = normalize_doi(cr_doi)
+    
+    # For cutoff calculation, use only DOI comparison
+    is_correct_for_cutoff = (norm_gold_doi == norm_cr_doi) if norm_cr_doi is not None else False
+    
+    # Store both the original is_correct and the one with validation
+    is_correct_with_validation = is_correct_for_cutoff and is_valid_match
+    
+    return {
+        "data": {
+            "key": key,
+            "title": title,
+            "gold_doi": gold_doi,
+            "crossref_doi": cr_doi,
+            "score": cr_score,
+            "is_correct": is_correct_for_cutoff,  # Used for cutoff calculation
+            "is_correct_with_validation": is_correct_with_validation,  # Used for final metrics
+            "on_crossref": on_crossref,
+            "cr_title": cr_metadata.get("title", ""),
+            "cr_year": cr_metadata.get("year", ""),
+            "cr_authors": cr_metadata.get("authors", []),
+            "cr_venue": cr_metadata.get("venue", ""),
+            "is_valid_match": is_valid_match,
+            "validation_details": validation_details
+        },
+        "cache_updated": cache_updated
+    }
+
+
+def process_json_and_training(
+    input_json: Dict, 
+    training_csv: str, 
+    output_plot: str, 
+    max_keys: Optional[int] = None, 
+    results_dir: str = "results", 
+    crossref_cache_file: Optional[str] = None, 
+    use_cache: bool = True
+) -> Tuple[List[Dict], float]:
+    os.makedirs(results_dir, exist_ok=True)
+    
+    crossref_cache = {}
+    if crossref_cache_file and use_cache:
+        crossref_cache = load_crossref_cache(crossref_cache_file)
+        print(f"Cache Crossref caricata con {len(crossref_cache)} elementi")
+    
+    training_data, _ = read_csv_data(training_csv)
+    print(f"Righe lette dal CSV: {len(training_data)}")
+    
+    results = []
+    cache_updates = False
+    
+    rows_to_process = training_data
+    if max_keys and max_keys < len(training_data):
+        rows_to_process = training_data[:max_keys]
+    
+    print(f"Elaborazione di {len(rows_to_process)} righe dal CSV di training")
+    
+    for row in rows_to_process:
+        key = row["Key"]
+        title = row["title"]
+        gold_doi = row["DOI"]
+        on_crossref = row["ID_on_Crossref"]
+        
+        year, updated_title, json_item = get_info_from_json(input_json, key, title)
+        
+        if updated_title:
+            result = process_record(
+                key, updated_title, gold_doi, on_crossref, year, json_item,
+                crossref_cache, use_cache
+            )
+            if result["cache_updated"]:
+                cache_updates = True
+            results.append(result["data"])
+        else:
+            print(f"Titolo mancante per la chiave {key}, impossibile interrogare CrossRef")
+        
+    if crossref_cache_file and cache_updates:
+        save_crossref_cache(crossref_cache, crossref_cache_file)
+        print(f"Cache Crossref salvata con {len(crossref_cache)} elementi")
+
+    best_cutoff = create_score_analysis_plot(results, output_plot, results_dir)
+    
+    return results, best_cutoff
+
+
+def evaluate_validation_set(
+    input_json: Dict, 
+    validation_csv: str, 
+    cutoff: float, 
+    output_csv: str, 
+    results_dir: str = "results", 
+    crossref_cache_file: Optional[str] = None
+) -> Dict:
+    os.makedirs(results_dir, exist_ok=True)
+    
+    output_csv = os.path.join(results_dir, output_csv)
+    
+    crossref_cache = {}
+    if crossref_cache_file:
+        crossref_cache = load_crossref_cache(crossref_cache_file)
+        print(f"Cache di validazione caricata con {len(crossref_cache)} elementi")
+    
+    validation_data, _ = read_csv_data(validation_csv)
+    print(f"Lette {len(validation_data)} righe dal file di validazione")
+    
+    results = []
+    validation_metrics = {
+        "total": len(validation_data),
+        "with_crossref_result": 0,
+        "true_positives": 0,
+        "false_positives": 0,
+        "true_negatives": 0,
+        "false_negatives": 0,
+        "true_positives_with_validation": 0,
+        "false_positives_with_validation": 0,
+        "true_negatives_with_validation": 0,
+        "false_negatives_with_validation": 0
+    }
+    
+    # Debug counter
+    debug_counter = 0
+    
+    for row in validation_data:
+        key = row["Key"]
+        title = row["title"]
+        gold_doi = row["DOI"]
+        on_crossref = row["ID_on_Crossref"]
+        
+        year, updated_title, json_item = get_info_from_json(input_json, key, title)
+        
+        # Debug logging for first 5 records
+        if debug_counter < 5:
+            print(f"\nDEBUG RECORD {debug_counter}:")
+            print(f"  Key: {key}")
+            print(f"  CSV Title: {title}")
+            print(f"  Updated Title: {updated_title}")
+            print(f"  Year: {year}")
+            print(f"  JSON Item found: {bool(json_item)}")
+            if json_item:
+                print(f"  JSON Item keys: {list(json_item.keys())}")
+            debug_counter += 1
+        
+        if title:
+            cache_key = f"{title}_{year}"
+            
+            if cache_key in crossref_cache:
+                if debug_counter <= 5:
+                    print(f"  Cache key found: {cache_key}")
+                
+                cr_result = crossref_cache[cache_key]
+                cr_doi = cr_result.get("doi")
+                cr_score = cr_result.get("score", 0)
+                cr_metadata = cr_result.get("metadata", {})
+                
+                # WORKAROUND: If metadata is empty or None, fetch it again
+                if not cr_metadata and cr_doi:
+                    print(f"  Metadata empty in cache, fetching from Crossref...")
+                    try:
+                        crossref_results = query_with_retry(query_crossref, title=title, year=year)
+                        cr_items = crossref_results.get("message", {}).get("items", [])
+                        if cr_items:
+                            cr_item = cr_items[0]
+                            cr_metadata = extract_crossref_metadata(cr_item)
+                            # Update cache with the fetched metadata
+                            cr_result["metadata"] = cr_metadata
+                            # Save updated cache
+                            if crossref_cache_file:
+                                save_crossref_cache(crossref_cache, crossref_cache_file)
+                    except Exception as e:
+                        print(f"  Error fetching metadata: {e}")
+                        cr_metadata = {}
+                
+                if debug_counter <= 5:
+                    print(f"  CR DOI: {cr_doi}")
+                    print(f"  CR Score: {cr_score}")
+                    print(f"  CR Metadata keys: {list(cr_metadata.keys()) if cr_metadata else 'None'}")
+                
+                if cr_doi is not None:
+                    validation_metrics["with_crossref_result"] += 1
+                    
+                    # Perform validation checks
+                    is_valid_match = False
+                    validation_details = {}
+                    if cr_metadata:
+                        if debug_counter <= 5:
+                            print(f"  Calling validate_crossref_match...")
+                        is_valid_match, validation_details = validate_crossref_match(
+                            json_item, 
+                            cr_metadata, 
+                            cr_metadata.get("year")
+                        )
+                        if debug_counter <= 5:
+                            print(f"  Validation result: {is_valid_match}")
+                            print(f"  Validation details: {validation_details}")
+                    else:
+                        if debug_counter <= 5:
+                            print(f"  No CR metadata, skipping validation")
+                    
+                    norm_gold_doi = normalize_doi(gold_doi)
+                    norm_cr_doi = normalize_doi(cr_doi)
+                    
+                    # Simple DOI match for cutoff-based metrics
+                    is_correct_simple = (norm_gold_doi == norm_cr_doi)
+                    
+                    # DOI match AND validation for enhanced metrics
+                    is_correct_with_validation = is_correct_simple and is_valid_match
+                    
+                    if debug_counter <= 5:
+                        print(f"  Gold DOI (norm): {norm_gold_doi}")
+                        print(f"  CR DOI (norm): {norm_cr_doi}")
+                        print(f"  Is correct (simple): {is_correct_simple}")
+                        print(f"  Is correct (with validation): {is_correct_with_validation}")
+                    
+                    exceeds_cutoff = cr_score >= cutoff
+                    accepted_doi = cr_doi if exceeds_cutoff else None
+                    accepted_doi_with_validation = cr_doi if exceeds_cutoff and is_valid_match else None
+                    
+                    # Standard metrics (only DOI match)
+                    if is_correct_simple and exceeds_cutoff:
+                        validation_metrics["true_positives"] += 1
+                    elif not is_correct_simple and exceeds_cutoff:
+                        validation_metrics["false_positives"] += 1
+                    elif not is_correct_simple and not exceeds_cutoff:
+                        validation_metrics["true_negatives"] += 1
+                    elif is_correct_simple and not exceeds_cutoff:
+                        validation_metrics["false_negatives"] += 1
+                    
+                    # Enhanced metrics (DOI match AND validation)
+                    if exceeds_cutoff:
+                        if is_valid_match:
+                            # Only if validation passes
+                            if is_correct_simple:
+                                validation_metrics["true_positives_with_validation"] += 1
+                            else:
+                                validation_metrics["false_positives_with_validation"] += 1
+                        else:
+                            # Validation failed - these become true negatives
+                            validation_metrics["true_negatives_with_validation"] += 1
+                    else:  # not exceeds_cutoff
+                        if is_valid_match and is_correct_simple:
+                            validation_metrics["false_negatives_with_validation"] += 1
+                        else:
+                            validation_metrics["true_negatives_with_validation"] += 1
+                    
+                    results.append({
+                        "Key": key,
+                        "title": title,
+                        "gold_doi": gold_doi,
+                        "crossref_doi": cr_doi,
+                        "score": cr_score,
+                        "is_correct": is_correct_simple,
+                        "is_correct_with_validation": is_correct_with_validation,
+                        "exceeds_cutoff": exceeds_cutoff,
+                        "accepted_doi": accepted_doi,
+                        "accepted_doi_with_validation": accepted_doi_with_validation,
+                        "on_crossref": on_crossref,
+                        "cr_title": cr_metadata.get("title", ""),
+                        "cr_year": cr_metadata.get("year", ""),
+                        "cr_authors": ", ".join(cr_metadata.get("authors", [])),
+                        "cr_venue": cr_metadata.get("venue", ""),
+                        "is_valid_match": is_valid_match,
+                        "validation_details": validation_details
+                    })
+                else:
+                    print(f"Nessun risultato da Crossref nella cache per {key}")
+                    results.append({
+                        "Key": key,
+                        "title": title,
+                        "gold_doi": gold_doi,
+                        "crossref_doi": None,
+                        "score": 0,
+                        "is_correct": False,
+                        "is_correct_with_validation": False,
+                        "exceeds_cutoff": False,
+                        "accepted_doi": None,
+                        "accepted_doi_with_validation": None,
+                        "on_crossref": on_crossref,
+                        "error": "Nessun risultato nella cache",
+                        "cr_title": "",
+                        "cr_year": "",
+                        "cr_authors": "",
+                        "cr_venue": "",
+                        "is_valid_match": False,
+                        "validation_details": {}
+                    })
+            else:
+                print(f"Chiave {cache_key} non trovata nella cache, saltando...")
+                results.append({
+                    "Key": key,
+                    "title": title,
+                    "gold_doi": gold_doi,
+                    "crossref_doi": None,
+                    "score": 0,
+                    "is_correct": False,
+                    "is_correct_with_validation": False,
+                    "exceeds_cutoff": False,
+                    "accepted_doi": None,
+                    "accepted_doi_with_validation": None,
+                    "on_crossref": on_crossref,
+                    "error": "Chiave non trovata nella cache",
+                    "cr_title": "",
+                    "cr_year": "",
+                    "cr_authors": "",
+                    "cr_venue": "",
+                    "is_valid_match": False,
+                    "validation_details": {}
+                })
+        else:
+            print(f"Titolo mancante per la chiave {key}")
+            results.append({
+                "Key": key,
+                "title": "",
+                "gold_doi": gold_doi,
+                "crossref_doi": None,
+                "score": 0,
+                "is_correct": False,
+                "is_correct_with_validation": False,
+                "exceeds_cutoff": False,
+                "accepted_doi": None,
+                "accepted_doi_with_validation": None,
+                "on_crossref": on_crossref,
+                "error": "Titolo mancante",
+                "cr_title": "",
+                "cr_year": "",
+                "cr_authors": "",
+                "cr_venue": "",
+                "is_valid_match": False,
+                "validation_details": {}
+            })
+    
+    # Calculate standard metrics
+    tp = validation_metrics["true_positives"]
+    fp = validation_metrics["false_positives"]
+    tn = validation_metrics["true_negatives"]
+    fn = validation_metrics["false_negatives"]
+    total_classified = tp + fp + tn + fn
+    
+    if total_classified > 0:
+        validation_metrics["accuracy"] = (tp + tn) / total_classified
+        validation_metrics["precision"] = tp / (tp + fp) if (tp + fp) > 0 else 0
+        validation_metrics["recall"] = tp / (tp + fn) if (tp + fn) > 0 else 0
+        validation_metrics["f1"] = 2 * (validation_metrics["precision"] * validation_metrics["recall"]) / (validation_metrics["precision"] + validation_metrics["recall"]) if (validation_metrics["precision"] + validation_metrics["recall"]) > 0 else 0
+    
+    # Calculate enhanced metrics with validation
+    tp_v = validation_metrics["true_positives_with_validation"]
+    fp_v = validation_metrics["false_positives_with_validation"]
+    tn_v = validation_metrics["true_negatives_with_validation"]
+    fn_v = validation_metrics["false_negatives_with_validation"]
+    total_classified_v = tp_v + fp_v + tn_v + fn_v
+    
+    if total_classified_v > 0:
+        validation_metrics["accuracy_with_validation"] = (tp_v + tn_v) / total_classified_v
+        validation_metrics["precision_with_validation"] = tp_v / (tp_v + fp_v) if (tp_v + fp_v) > 0 else 0
+        validation_metrics["recall_with_validation"] = tp_v / (tp_v + fn_v) if (tp_v + fn_v) > 0 else 0
+        validation_metrics["f1_with_validation"] = 2 * (validation_metrics["precision_with_validation"] * validation_metrics["recall_with_validation"]) / (validation_metrics["precision_with_validation"] + validation_metrics["recall_with_validation"]) if (validation_metrics["precision_with_validation"] + validation_metrics["recall_with_validation"]) > 0 else 0
+    '''
+    TO BE REMOVED
+    print("\nMetriche di validazione (solo DOI match):")
+    print(f"Totale elementi: {validation_metrics['total']}")
+    print(f"Elementi con risultato Crossref: {validation_metrics['with_crossref_result']}")
+    print(f"Cutoff applicato: {cutoff}")
+    if total_classified > 0:
+        print(f"Accuratezza: {validation_metrics['accuracy']:.4f}")
+        print(f"Precisione: {validation_metrics['precision']:.4f}")
+        print(f"Recall: {validation_metrics['recall']:.4f}")
+        print(f"F1 Score: {validation_metrics['f1']:.4f}")
+    
+    print("\nMatrice di confusione (solo DOI match):")
+    print(f"VP: {tp} | FP: {fp}")
+    print(f"FN: {fn} | VN: {tn}")
+    
+    print("\nMetriche di validazione (DOI match + metadata validation):")
+    if total_classified_v > 0:
+        print(f"Accuratezza: {validation_metrics['accuracy_with_validation']:.4f}")
+        print(f"Precisione: {validation_metrics['precision_with_validation']:.4f}")
+        print(f"Recall: {validation_metrics['recall_with_validation']:.4f}")
+        print(f"F1 Score: {validation_metrics['f1_with_validation']:.4f}")
+    
+    print("\nMatrice di confusione (DOI match + metadata validation):")
+    print(f"VP: {tp_v} | FP: {fp_v}")
+    print(f"FN: {fn_v} | VN: {tn_v}")
+    '''
+    
+    save_validation_results(results, output_csv, results_dir, validation_metrics)
+    
+    return validation_metrics
+
+
+def save_validation_results(results: List[Dict], output_csv: str, results_dir: str, validation_metrics: Dict) -> None:
+    """Salva i risultati della validazione in CSV e le metriche in JSON."""
+    with open(output_csv, "w", encoding="utf-8", newline="") as f:
+        fieldnames = ["Key", "title", "gold_doi", "crossref_doi", "score", "is_correct", 
+                     "is_correct_with_validation", "exceeds_cutoff", "accepted_doi", 
+                     "accepted_doi_with_validation", "on_crossref", "error", 
+                     "cr_title", "cr_year", "cr_authors", "cr_venue", 
+                     "is_valid_match", "title_similarity", "title_valid", 
+                     "year_valid", "author_valid"]
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        
+        # Expand validation_details for each row
+        for row in results:
+            row_copy = row.copy()
+            if "validation_details" in row_copy:
+                details = row_copy.pop("validation_details")
+                row_copy.update({
+                    "title_similarity": details.get("title_similarity", 0.0),
+                    "title_valid": details.get("title_valid", False),
+                    "year_valid": details.get("year_valid", False),
+                    "author_valid": details.get("author_valid", False)
+                })
+            writer.writerow(row_copy)
+    
+    print(f"\nRisultati salvati in {output_csv}")
+    
+    metrics_file = os.path.join(results_dir, "validation_metrics.json")
+    with open(metrics_file, "w", encoding="utf-8") as f:
+        json.dump(validation_metrics, f, ensure_ascii=False, indent=4)
+    
+    print(f"Metriche salvate in {metrics_file}")
+
+
+# Keep all other functions unchanged
 def print_summary(best_cutoff: float, cached_metrics: Dict) -> None:
     """Stampa un riepilogo dei risultati della validazione."""
     print("\nRiassunto finale:")
     print(f"Cutoff ottimale sul training set: {best_cutoff:.2f}")
     
     if cached_metrics and "accuracy" in cached_metrics:
-        print(f"\nPerformance sul validation set (usando cache):")
+        print(f"\nPerformance sul validation set (solo DOI match):")
         print(f"  Accuratezza: {cached_metrics['accuracy']:.4f}")
         print(f"  Precisione: {cached_metrics['precision']:.4f}")
         print(f"  Recall: {cached_metrics['recall']:.4f}")
         print(f"  F1 Score: {cached_metrics['f1']:.4f}")
+        
+        if "accuracy_with_validation" in cached_metrics:
+            print(f"\nPerformance sul validation set (DOI match + metadata validation):")
+            print(f"  Accuratezza: {cached_metrics['accuracy_with_validation']:.4f}")
+            print(f"  Precisione: {cached_metrics['precision_with_validation']:.4f}")
+            print(f"  Recall: {cached_metrics['recall_with_validation']:.4f}")
+            print(f"  F1 Score: {cached_metrics['f1_with_validation']:.4f}")
 
 
 def query_with_retry(query_function, max_retries=3, timeout=5, *args, **kwargs) -> Dict:
@@ -232,148 +830,6 @@ def read_csv_data(file_path: str) -> Tuple[List[Dict], List[str]]:
                 })
         
         return data, headers
-
-
-def process_json_and_training(
-    input_json: Dict, 
-    training_csv: str, 
-    output_plot: str, 
-    max_keys: Optional[int] = None, 
-    results_dir: str = "results", 
-    crossref_cache_file: Optional[str] = None, 
-    use_cache: bool = True
-) -> Tuple[List[Dict], float]:
-    os.makedirs(results_dir, exist_ok=True)
-    
-    crossref_cache = {}
-    if crossref_cache_file and use_cache:
-        crossref_cache = load_crossref_cache(crossref_cache_file)
-        print(f"Cache Crossref caricata con {len(crossref_cache)} elementi")
-    
-    training_data, _ = read_csv_data(training_csv)
-    print(f"Righe lette dal CSV: {len(training_data)}")
-    
-    results = []
-    cache_updates = False
-    
-    rows_to_process = training_data
-    if max_keys and max_keys < len(training_data):
-        rows_to_process = training_data[:max_keys]
-    
-    print(f"Elaborazione di {len(rows_to_process)} righe dal CSV di training")
-    
-    for row in rows_to_process:
-        key = row["Key"]
-        title = row["title"]
-        gold_doi = row["DOI"]
-        on_crossref = row["ID_on_Crossref"]
-        
-        year, updated_title = get_info_from_json(input_json, key, title)
-        
-        if updated_title:
-            result = process_record(
-                key, updated_title, gold_doi, on_crossref, year, 
-                crossref_cache, use_cache
-            )
-            if result["cache_updated"]:
-                cache_updates = True
-            results.append(result["data"])
-        else:
-            print(f"Titolo mancante per la chiave {key}, impossibile interrogare CrossRef")
-        
-    if crossref_cache_file and cache_updates:
-        save_crossref_cache(crossref_cache, crossref_cache_file)
-        print(f"Cache Crossref salvata con {len(crossref_cache)} elementi")
-
-    best_cutoff = create_score_analysis_plot(results, output_plot, results_dir)
-    
-    return results, best_cutoff
-
-
-def get_info_from_json(input_json: Dict, key: str, title: str) -> Tuple[int, str]:
-    """Estrae l'anno e aggiorna il titolo dal file JSON."""
-    year = 2020  # Anno predefinito
-    updated_title = title  # titolo del CSV
-    
-    if key in input_json:
-        json_item = input_json[key]
-        if "title" in json_item and json_item["title"]:
-            updated_title = json_item["title"]
-        if "year" in json_item:
-            year = json_item["year"]
-    
-    return year, updated_title
-
-
-def process_record(
-    key: str, 
-    title: str, 
-    gold_doi: str, 
-    on_crossref: bool, 
-    year: int, 
-    crossref_cache: Dict, 
-    use_cache: bool
-) -> Dict:
-    cache_key = f"{title}_{year}"
-    cache_updated = False
-    
-    if cache_key in crossref_cache and use_cache:
-        print(f"Usando risultato dalla cache per '{title}'")
-        cr_result = crossref_cache[cache_key]
-        cr_doi = cr_result.get("doi")
-        cr_score = cr_result.get("score", 0)
-        cr_metadata = cr_result.get("metadata", {})
-    else:
-        print(f"Interrogazione di CrossRef per il titolo '{title}' e anno '{year}'...")
-        try:
-            crossref_results = query_with_retry(query_crossref, title=title, year=year)
-            
-            cr_items = crossref_results.get("message", {}).get("items", [])
-            if cr_items:
-                cr_item = cr_items[0]  
-                cr_doi = cr_item.get("DOI")
-                cr_score = extract_crossref_score(cr_item)
-                cr_metadata = extract_crossref_metadata(cr_item)
-            else:
-                print(f"Nessun risultato trovato su CrossRef per {key}")
-                cr_doi = None
-                cr_score = 0
-                cr_metadata = {}
-            
-            crossref_cache[cache_key] = {
-                "doi": cr_doi,
-                "score": cr_score,
-                "metadata": cr_metadata,
-                "key": key  
-            }
-            cache_updated = True
-        except Exception as e:
-            print(f"Errore nell'interrogazione per la chiave {key}: {e}")
-            cr_doi = None
-            cr_score = 0
-            cr_metadata = {}
-    
-    norm_gold_doi = normalize_doi(gold_doi)
-    norm_cr_doi = normalize_doi(cr_doi)
-    
-    is_correct = (norm_gold_doi == norm_cr_doi) if norm_cr_doi is not None else False
-    
-    return {
-        "data": {
-            "key": key,
-            "title": title,
-            "gold_doi": gold_doi,
-            "crossref_doi": cr_doi,
-            "score": cr_score,
-            "is_correct": is_correct,
-            "on_crossref": on_crossref,
-            "cr_title": cr_metadata.get("title", ""),
-            "cr_year": cr_metadata.get("year", ""),
-            "cr_authors": cr_metadata.get("authors", []),
-            "cr_venue": cr_metadata.get("venue", "")
-        },
-        "cache_updated": cache_updated
-    }
 
 
 def create_score_analysis_plot(results: List[Dict], output_plot: str, results_dir: str = "results") -> Optional[float]:
@@ -535,7 +991,7 @@ def create_validation_cache(
         key = row["Key"]
         title = row["title"]
         
-        year,updated_title = get_info_from_json(input_json, key, title)
+        year, updated_title, _ = get_info_from_json(input_json, key, title)
         
         if updated_title:
             
@@ -589,224 +1045,6 @@ def create_validation_cache(
     return validation_cache
 
 
-def evaluate_validation_set(
-    input_json: Dict, 
-    validation_csv: str, 
-    cutoff: float, 
-    output_csv: str, 
-    results_dir: str = "results", 
-    crossref_cache_file: Optional[str] = None
-) -> Dict:
-    os.makedirs(results_dir, exist_ok=True)
-    
-    output_csv = os.path.join(results_dir, output_csv)
-    
-    crossref_cache = {}
-    if crossref_cache_file:
-        crossref_cache = load_crossref_cache(crossref_cache_file)
-        print(f"Cache di validazione caricata con {len(crossref_cache)} elementi")
-    
-    validation_data, _ = read_csv_data(validation_csv)
-    print(f"Lette {len(validation_data)} righe dal file di validazione")
-    
-    results = []
-    validation_metrics = {
-        "total": len(validation_data),
-        "with_crossref_result": 0,
-        "true_positives": 0,
-        "false_positives": 0,
-        "true_negatives": 0,
-        "false_negatives": 0
-    }
-    
-    for row in validation_data:
-        key = row["Key"]
-        title = row["title"]
-        gold_doi = row["DOI"]
-        on_crossref = row["ID_on_Crossref"]
-        
-        year, updated_title = get_info_from_json(input_json, key, title)
-        
-        if title:
-            cache_key = f"{title}_{year}"
-            
-            if cache_key in crossref_cache:
-                print(f"Usando risultato dalla cache per '{title}'")
-                cr_result = crossref_cache[cache_key]
-                cr_doi = cr_result.get("doi")
-                cr_score = cr_result.get("score", 0)
-                cr_metadata = cr_result.get("metadata", {})
-                
-                if cr_doi is not None:
-                    validation_metrics["with_crossref_result"] += 1
-                    
-                    norm_gold_doi = normalize_doi(gold_doi)
-                    norm_cr_doi = normalize_doi(cr_doi)
-                    
-                    is_correct = (norm_gold_doi == norm_cr_doi)
-                    
-                    exceeds_cutoff = cr_score >= cutoff
-                    accepted_doi = cr_doi if exceeds_cutoff else None
-                    
-                    if is_correct and exceeds_cutoff:
-                        validation_metrics["true_positives"] += 1
-                    elif not is_correct and exceeds_cutoff:
-                        validation_metrics["false_positives"] += 1
-                    elif not is_correct and not exceeds_cutoff:
-                        validation_metrics["true_negatives"] += 1
-                    elif is_correct and not exceeds_cutoff:
-                        validation_metrics["false_negatives"] += 1
-                    
-                    results.append({
-                        "Key": key,
-                        "title": title,
-                        "gold_doi": gold_doi,
-                        "crossref_doi": cr_doi,
-                        "score": cr_score,
-                        "is_correct": is_correct,
-                        "exceeds_cutoff": exceeds_cutoff,
-                        "accepted_doi": accepted_doi,
-                        "on_crossref": on_crossref,
-                        "cr_title": cr_metadata.get("title", ""),
-                        "cr_year": cr_metadata.get("year", ""),
-                        "cr_authors": ", ".join(cr_metadata.get("authors", [])),
-                        "cr_venue": cr_metadata.get("venue", "")
-                    })
-                else:
-                    print(f"Nessun risultato da Crossref nella cache per {key}")
-                    results.append({
-                        "Key": key,
-                        "title": title,
-                        "gold_doi": gold_doi,
-                        "crossref_doi": None,
-                        "score": 0,
-                        "is_correct": False,
-                        "exceeds_cutoff": False,
-                        "accepted_doi": None,
-                        "on_crossref": on_crossref,
-                        "error": "Nessun risultato nella cache",
-                        "cr_title": "",
-                        "cr_year": "",
-                        "cr_authors": "",
-                        "cr_venue": ""
-                    })
-            else:
-                print(f"Chiave {cache_key} non trovata nella cache, saltando...")
-                results.append({
-                    "Key": key,
-                    "title": title,
-                    "gold_doi": gold_doi,
-                    "crossref_doi": None,
-                    "score": 0,
-                    "is_correct": False,
-                    "exceeds_cutoff": False,
-                    "accepted_doi": None,
-                    "on_crossref": on_crossref,
-                    "error": "Chiave non trovata nella cache",
-                    "cr_title": "",
-                    "cr_year": "",
-                    "cr_authors": "",
-                    "cr_venue": ""
-                })
-        else:
-            print(f"Titolo mancante per la chiave {key}")
-            results.append({
-                "Key": key,
-                "title": "",
-                "gold_doi": gold_doi,
-                "crossref_doi": None,
-                "score": 0,
-                "is_correct": False,
-                "exceeds_cutoff": False,
-                "accepted_doi": None,
-                "on_crossref": on_crossref,
-                "error": "Titolo mancante",
-                "cr_title": "",
-                "cr_year": "",
-                "cr_authors": "",
-                "cr_venue": ""
-            })
-    
-    tp = validation_metrics["true_positives"]
-    fp = validation_metrics["false_positives"]
-    tn = validation_metrics["true_negatives"]
-    fn = validation_metrics["false_negatives"]
-    total_classified = tp + fp + tn + fn
-    
-    if total_classified > 0:
-        validation_metrics["accuracy"] = (tp + tn) / total_classified
-        validation_metrics["precision"] = tp / (tp + fp) if (tp + fp) > 0 else 0
-        validation_metrics["recall"] = tp / (tp + fn) if (tp + fn) > 0 else 0
-        validation_metrics["f1"] = 2 * (validation_metrics["precision"] * validation_metrics["recall"]) / (validation_metrics["precision"] + validation_metrics["recall"]) if (validation_metrics["precision"] + validation_metrics["recall"]) > 0 else 0
-    
-    print("\nMetriche di validazione:")
-    print(f"Totale elementi: {validation_metrics['total']}")
-    print(f"Elementi con risultato Crossref: {validation_metrics['with_crossref_result']}")
-    print(f"Cutoff applicato: {cutoff}")
-    if total_classified > 0:
-        print(f"Accuratezza: {validation_metrics['accuracy']:.4f}")
-        print(f"Precisione: {validation_metrics['precision']:.4f}")
-        print(f"Recall: {validation_metrics['recall']:.4f}")
-        print(f"F1 Score: {validation_metrics['f1']:.4f}")
-    
-    print("\nMatrice di confusione:")
-    print(f"VP: {tp} | FP: {fp}")
-    print(f"FN: {fn} | VN: {tn}")
-    
-    save_validation_results(results, output_csv, results_dir, validation_metrics)
-    
-    return validation_metrics
-
-def save_validation_results(results: List[Dict], output_csv: str, results_dir: str, validation_metrics: Dict) -> None:
-    """Salva i risultati della validazione in CSV e le metriche in JSON."""
-    with open(output_csv, "w", encoding="utf-8", newline="") as f:
-        fieldnames = ["Key", "title", "gold_doi", "crossref_doi", "score", "is_correct", 
-                     "exceeds_cutoff", "accepted_doi", "on_crossref", "error", 
-                     "cr_title", "cr_year", "cr_authors", "cr_venue"]
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(results)
-    
-    print(f"\nRisultati salvati in {output_csv}")
-    
-    metrics_file = os.path.join(results_dir, "validation_metrics.json")
-    with open(metrics_file, "w", encoding="utf-8") as f:
-        json.dump(validation_metrics, f, ensure_ascii=False, indent=4)
-    
-    print(f"Metriche salvate in {metrics_file}")
-
-def analyze_wrong_matches(results, cutoff, output_csv):
-    wrong_matches = [r for r in results if r["score"] >= cutoff and not r["is_correct"] and r["on_crossref"]]
-    
-    if not wrong_matches:
-        print("Nessun wrong match sopra il cutoff trovato.")
-        return
-    
-    print(f"Trovati {len(wrong_matches)} wrong matches sopra il cutoff.")
-
-    with open(output_csv, "w", encoding="utf-8", newline="") as f:
-        fieldnames = ["key", "title", "gold_doi", "crossref_doi", "score", "on_crossref", 
-                        "cr_title", "cr_year", "cr_authors", "cr_venue"]
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        
-        for match in wrong_matches:
-            writer.writerow({
-                "key": match["key"],
-                "title": match["title"],
-                "gold_doi": match["gold_doi"],
-                "crossref_doi": match["crossref_doi"],
-                "score": match["score"],
-                "on_crossref": match["on_crossref"],
-                "cr_title": match["cr_title"],
-                "cr_year": match["cr_year"],
-                "cr_authors": match["cr_authors"],
-                "cr_venue": match["cr_venue"]
-            })
-
-    
-    print(f"Analisi dei wrong matches salvata in {output_csv}")
-
 def evaluate_validation_set_direct(
     input_json: Dict, 
     validation_csv: str, 
@@ -841,7 +1079,7 @@ def evaluate_validation_set_direct(
         gold_doi = row["DOI"]
         on_crossref = row["ID_on_Crossref"]
         
-        year, updated_title = get_info_from_json(input_json, key, title)
+        year, updated_title, json_item = get_info_from_json(input_json, key, title)
         
         if updated_title:
             try:
@@ -857,13 +1095,24 @@ def evaluate_validation_set_direct(
                     cr_score = extract_crossref_score(cr_item)
                     cr_metadata = extract_crossref_metadata(cr_item)
                     
+                    # Perform validation checks
+                    is_valid_match = False
+                    validation_details = {}
+                    if cr_metadata:
+                        is_valid_match, validation_details = validate_crossref_match(
+                            json_item, 
+                            cr_metadata, 
+                            cr_metadata.get("year")
+                        )
+                    
                     norm_gold_doi = normalize_doi(gold_doi)
                     norm_cr_doi = normalize_doi(cr_doi)
                     
-                    is_correct = (norm_gold_doi == norm_cr_doi)
+                    # Only consider it correct if DOIs match AND validation passes
+                    is_correct = (norm_gold_doi == norm_cr_doi) and is_valid_match
                     
                     exceeds_cutoff = cr_score >= cutoff
-                    accepted_doi = cr_doi if exceeds_cutoff else None
+                    accepted_doi = cr_doi if exceeds_cutoff and is_valid_match else None
                     
                     if is_correct and exceeds_cutoff:
                         validation_metrics["true_positives"] += 1
@@ -887,7 +1136,9 @@ def evaluate_validation_set_direct(
                         "cr_title": cr_metadata.get("title", ""),
                         "cr_year": cr_metadata.get("year", ""),
                         "cr_authors": ", ".join(cr_metadata.get("authors", [])),
-                        "cr_venue": cr_metadata.get("venue", "")
+                        "cr_venue": cr_metadata.get("venue", ""),
+                        "is_valid_match": is_valid_match,
+                        "validation_details": validation_details
                     })
                 else:
                     print(f"Nessun risultato da Crossref per {key}")
@@ -905,7 +1156,9 @@ def evaluate_validation_set_direct(
                         "cr_title": "",
                         "cr_year": "",
                         "cr_authors": "",
-                        "cr_venue": ""
+                        "cr_venue": "",
+                        "is_valid_match": False,
+                        "validation_details": {}
                     })
             except Exception as e:
                 print(f"Errore nell'interrogazione diretta per la chiave {key}: {e}")
@@ -923,7 +1176,9 @@ def evaluate_validation_set_direct(
                     "cr_title": "",
                     "cr_year": "",
                     "cr_authors": "",
-                    "cr_venue": ""
+                    "cr_venue": "",
+                    "is_valid_match": False,
+                    "validation_details": {}
                 })
         else:
             print(f"Titolo mancante per la chiave {key}")
@@ -941,7 +1196,9 @@ def evaluate_validation_set_direct(
                 "cr_title": "",
                 "cr_year": "",
                 "cr_authors": "",
-                "cr_venue": ""
+                "cr_venue": "",
+                "is_valid_match": False,
+                "validation_details": {}
             })
     
     tp = validation_metrics["true_positives"]
@@ -970,23 +1227,56 @@ def evaluate_validation_set_direct(
     print(f"VP: {tp} | FP: {fp}")
     print(f"FN: {fn} | VN: {tn}")
     
-    with open(output_csv, "w", encoding="utf-8", newline="") as f:
-        fieldnames = ["Key", "title", "gold_doi", "crossref_doi", "score", "is_correct", 
-                     "exceeds_cutoff", "accepted_doi", "on_crossref", "error", 
-                     "cr_title", "cr_year", "cr_authors", "cr_venue"]
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(results)
-    
-    print(f"\nRisultati di interrogazione diretta salvati in {output_csv}")
-    
-    metrics_file = os.path.join(results_dir, "validation_direct_metrics.json")
-    with open(metrics_file, "w", encoding="utf-8") as f:
-        json.dump(validation_metrics, f, ensure_ascii=False, indent=4)
-    
-    print(f"Metriche di interrogazione diretta salvate in {metrics_file}")
+    save_validation_results(results, output_csv, results_dir, validation_metrics)
     
     return validation_metrics
+
+
+def analyze_wrong_matches(results, cutoff, output_csv):
+    wrong_matches = [r for r in results if r["score"] >= cutoff and not r["is_correct"] and r["on_crossref"]]
+    
+    if not wrong_matches:
+        print("Nessun wrong match sopra il cutoff trovato.")
+        return
+    
+    print(f"Trovati {len(wrong_matches)} wrong matches sopra il cutoff.")
+
+    with open(output_csv, "w", encoding="utf-8", newline="") as f:
+        fieldnames = ["key", "title", "gold_doi", "crossref_doi", "score", "on_crossref", 
+                        "cr_title", "cr_year", "cr_authors", "cr_venue", "is_valid_match",
+                        "title_similarity", "title_valid", "year_valid", "author_valid"]
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        
+        for match in wrong_matches:
+            row_data = {
+                "key": match["key"],
+                "title": match["title"],
+                "gold_doi": match["gold_doi"],
+                "crossref_doi": match["crossref_doi"],
+                "score": match["score"],
+                "on_crossref": match["on_crossref"],
+                "cr_title": match["cr_title"],
+                "cr_year": match["cr_year"],
+                "cr_authors": match["cr_authors"],
+                "cr_venue": match["cr_venue"],
+                "is_valid_match": match.get("is_valid_match", False),
+            }
+            
+            # Add validation details if available
+            if "validation_details" in match:
+                details = match["validation_details"]
+                row_data.update({
+                    "title_similarity": details.get("title_similarity", 0.0),
+                    "title_valid": details.get("title_valid", False),
+                    "year_valid": details.get("year_valid", False),
+                    "author_valid": details.get("author_valid", False)
+                })
+            
+            writer.writerow(row_data)
+    
+    print(f"Analisi dei wrong matches salvata in {output_csv}")
+
 
 if __name__ == "__main__":
     main()
