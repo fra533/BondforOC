@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Tuple, Union, Any
 import Levenshtein  # You'll need to install python-Levenshtein package
 
 
-def main():
+def main(manual_cutoff: Optional[float] = None):
     results_dir = "results"
     os.makedirs(results_dir, exist_ok=True)
     
@@ -40,6 +40,10 @@ def main():
             crossref_cache_file=training_cache_file,
             use_cache=use_cache
         )
+
+        if manual_cutoff is not None:
+            print(f"\nUsando cutoff manuale: {manual_cutoff} invece di {best_cutoff}")
+            best_cutoff = manual_cutoff
         
         if create_cache:
             print("\nCreazione della cache per il validation set...")
@@ -682,13 +686,14 @@ def print_summary(best_cutoff: float, cached_metrics: Dict) -> None:
         print(f"  Precisione: {cached_metrics['precision']:.4f}")
         print(f"  Recall: {cached_metrics['recall']:.4f}")
         print(f"  F1 Score: {cached_metrics['f1']:.4f}")
-        
-        if "accuracy_with_validation" in cached_metrics:
-            print(f"\nPerformance sul validation set (DOI match + metadata validation):")
-            print(f"  Accuratezza: {cached_metrics['accuracy_with_validation']:.4f}")
-            print(f"  Precisione: {cached_metrics['precision_with_validation']:.4f}")
-            print(f"  Recall: {cached_metrics['recall_with_validation']:.4f}")
-            print(f"  F1 Score: {cached_metrics['f1_with_validation']:.4f}")
+    
+    
+    if "accuracy_with_validation" in cached_metrics:
+        print(f"\nPerformance sul validation set (DOI match + metadata validation):")
+        print(f"  Accuratezza: {cached_metrics['accuracy_with_validation']:.4f}")
+        print(f"  Precisione: {cached_metrics['precision_with_validation']:.4f}")
+        print(f"  Recall: {cached_metrics['recall_with_validation']:.4f}")
+        print(f"  F1 Score: {cached_metrics['f1_with_validation']:.4f}")
 
 
 def query_with_retry(query_function, max_retries=3, timeout=5, *args, **kwargs) -> Dict:
@@ -1279,4 +1284,4 @@ def analyze_wrong_matches(results, cutoff, output_csv):
 
 
 if __name__ == "__main__":
-    main()
+    main(manual_cutoff=35.00)
