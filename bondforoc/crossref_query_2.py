@@ -708,14 +708,39 @@ def query_with_retry(query_function, max_retries=3, timeout=5, *args, **kwargs) 
     raise Exception("Numero massimo di tentativi superato")
 
 
-def query_crossref(title: str, year: int) -> Dict:
+def query_crossref(title: str, year: Optional[Union[int, str]]) -> Dict:
     """Interroga l'API di CrossRef per un titolo e anno specifici."""
     url = "https://api.crossref.org/works"
-    params = {
-        "query.title": title,
-        "filter": f"from-pub-date:{year},until-pub-date:{year + 1}",
-        "rows": 1  
-    }
+    
+    # Gestione anni problematici (0, 1, stringa vuota o None)
+    if year is None or year == "" or (isinstance(year, (int, float)) and year <= 1):
+        # Usa un anno di default (2020) per questi casi
+        default_year = 2020
+        print(f"NOTA: Utilizzando anno di default {default_year} invece di '{year}' per titolo '{title}'")
+        params = {
+            "query.title": title,
+            "filter": f"from-pub-date:{default_year},until-pub-date:{default_year + 1}",
+            "rows": 1
+        }
+    else:
+        # Assicurati che l'anno sia un intero
+        try:
+            year_int = int(year)
+            params = {
+                "query.title": title,
+                "filter": f"from-pub-date:{year_int},until-pub-date:{year_int + 1}",
+                "rows": 1
+            }
+        except (ValueError, TypeError):
+            # Se la conversione a intero fallisce, usa il default
+            default_year = 2020
+            print(f"NOTA: Impossibile convertire anno '{year}' a intero, usando {default_year} per titolo '{title}'")
+            params = {
+                "query.title": title,
+                "filter": f"from-pub-date:{default_year},until-pub-date:{default_year + 1}",
+                "rows": 1
+            }
+    
     response = requests.get(url, params=params)
     response.raise_for_status()
     return response.json()
@@ -1284,4 +1309,5 @@ def analyze_wrong_matches(results, cutoff, output_csv):
 
 
 if __name__ == "__main__":
-    main(manual_cutoff=35.00)
+    main()
+    #main(manual_cutoff=40.00)
