@@ -5,6 +5,7 @@ import os
 import time
 import signal
 import sys
+import re
 from typing import Dict, List, Optional, Tuple, Any
 
 # Configurazione
@@ -19,6 +20,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 CACHE_FILENAME = os.path.join(OUTPUT_DIR, "opencitations_cache.json")
 NOT_FOUND_FILENAME = os.path.join(OUTPUT_DIR, "final_batch_notfound.json")
 METADATA_FILENAME = os.path.join(OUTPUT_DIR, "opencitations_metadata.json")
+CONVERTED_FILENAME = os.path.join(OUTPUT_DIR, "converted_metadata.json")  # NUOVO
 LOG_FILENAME = os.path.join(OUTPUT_DIR, "opencitations_app.log")
 SUMMARY_FILENAME = os.path.join(OUTPUT_DIR, "processing_summary.json")
 RETRY_FILENAME = os.path.join(OUTPUT_DIR, "retry_candidates.json")
@@ -46,6 +48,147 @@ logging.basicConfig(
 cache = {}
 processed_count = 0
 cache_modified = False
+
+# ===============================
+# FUNZIONI DI CONVERSIONE FORMATO
+# ===============================
+
+def parse_authors(author_string: str) -> List[Dict[str, str]]:
+    """
+    Converte la stringa degli autori nel formato desiderato.
+    Input: "Wang, Xiaonan; Zhang, Daoyong; Qian, Haifeng; ..."
+    Output: [{"name": "Xiaonan Wang", "org": ""}, ...]
+    """
+    if not author_string:
+        return []
+    
+    authors = []
+    # Dividi per punto e virgola per separare gli autori
+    author_parts = author_string.split(';')
+    
+    for author_part in author_parts:
+        author_part = author_part.strip()
+        if not author_part:
+            continue
+            
+        # Rimuovi ORCID ID se presente (formato: 0000-0000-0000-0000)
+        author_part = re.sub(r',?\s*\d{4}-\d{4}-\d{4}-\d{4}[X\d]?', '', author_part)
+        
+        # Se contiene una virgola, assume formato "Cognome, Nome"
+        if ',' in author_part:
+            parts = author_part.split(',', 1)
+            if len(parts) == 2:
+                surname = parts[0].strip()
+                name = parts[1].strip()
+                full_name = f"{name} {surname}"
+            else:
+                full_name = author_part.strip()
+        else:
+            full_name = author_part.strip()
+        
+        if full_name:
+            authors.append({
+                "name": full_name,
+                "org": ""
+            })
+    
+    return authors
+
+def extract_keywords_from_title(title: str) -> List[str]:
+    """
+    Estrae parole chiave dal titolo (implementazione basilare).
+    Potresti migliorare questa funzione con tecniche NLP più avanzate.
+    """
+    if not title:
+        return []
+    
+    # Parole comuni da escludere
+    stop_words = {
+        'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from', 
+        'has', 'he', 'in', 'is', 'it', 'its', 'of', 'on', 'that', 'the', 
+        'to', 'was', 'were', 'will', 'with', 'between', 'using', 'through',
+        'this', 'these', 'those', 'their', 'them', 'than', 'when', 'where',
+        'which', 'while', 'who', 'how', 'what', 'can', 'could', 'should',
+        'would', 'may', 'might', 'must', 'shall', 'study', 'analysis'
+    }
+    
+    # Estrai parole dal titolo
+    words = re.findall(r'\b[a-zA-Z]+\b', title.lower())
+    keywords = [word for word in words if len(word) > 3 and word not in stop_words]
+    
+    # Rimuovi duplicati mantenendo l'ordine
+    seen = set()
+    unique_keywords = []
+    for keyword in keywords:
+        if keyword not in seen:
+            seen.add(keyword)
+            unique_keywords.append(keyword)
+    
+    return unique_keywords[:15]  # Limita a 15 parole chiave
+
+def parse_year(year_string: str) -> Optional[int]:
+    """
+    Estrae l'anno dalla stringa anno.
+    Input: "2018-02" -> Output: 2018
+    """
+    if not year_string:
+        return None
+    
+    # Cerca un anno a 4 cifre
+    year_match = re.search(r'\b(19|20)\d{2}\b', str(year_string))
+    if year_match:
+        return int(year_match.group())
+    
+    return None
+
+def convert_metadata_format(opencitations_data: List[Dict]) -> Dict[str, Dict]:
+    """
+    Converte i dati dal formato OpenCitations al formato target.
+    
+    Args:
+        opencitations_data: Lista di dizionari nel formato OpenCitations
+        
+    Returns:
+        Dizionario nel formato target con chiavi = key dei paper originali
+    """
+    converted_data = {}
+    
+    for paper in opencitations_data:
+        key = paper.get("key")
+        if not key:
+            continue
+            
+        metadata_list = paper.get("metadata", [])
+        if not metadata_list:
+            continue
+            
+        # Prendi il primo elemento dei metadati (dovrebbe essere solo uno)
+        metadata = metadata_list[0] if isinstance(metadata_list, list) else metadata_list
+        
+        # Estrai i dati
+        title = metadata.get("title", "")
+        authors_string = metadata.get("author", "")
+        year_string = metadata.get("year", "")
+        venue = metadata.get("source_title", "")
+        
+        # Converti nel formato target
+        converted_paper = {
+            "id": key,
+            "title": title,
+            "abstract": "",  # Non disponibile nei dati OpenCitations
+            "keywords": extract_keywords_from_title(title),
+            "authors": parse_authors(authors_string),
+            "venue": venue,
+            "year": parse_year(year_string)
+        }
+        
+        converted_data[key] = converted_paper
+    
+    return converted_data
+
+# ===============================
+# FUNZIONI ORIGINALI MODIFICATE
+# ===============================
 
 # Gestione per l'interruzione da tastiera
 def signal_handler(sig, frame):
@@ -127,24 +270,34 @@ def load_retry_candidates():
     return []
 
 def save_results(results, metadata_collected, not_found_dois, summary, retry_candidates=None):
-    """Salva tutti i file di output."""
+    """Salva tutti i file di output, inclusa la versione convertita."""
     try:
         # Salva i DOI non trovati
         with open(NOT_FOUND_FILENAME, 'w', encoding='utf-8') as f:
             json.dump(not_found_dois, f, indent=4)
         logging.info(f"Salvati {len(not_found_dois)} DOI non trovati in {NOT_FOUND_FILENAME}")
         
-        # Salva i metadati raccolti
+        # Salva i metadati raccolti (formato originale)
         with open(METADATA_FILENAME, 'w', encoding='utf-8') as f:
             json.dump(metadata_collected, f, indent=4)
         logging.info(f"Salvati metadati per {len(metadata_collected)} DOI in {METADATA_FILENAME}")
+        
+        # NUOVO: Converti e salva nel formato target
+        converted_count = 0
+        if metadata_collected:
+            converted_data = convert_metadata_format(metadata_collected)
+            converted_count = len(converted_data)
+            with open(CONVERTED_FILENAME, 'w', encoding='utf-8') as f:
+                json.dump(converted_data, f, indent=4)
+            logging.info(f"Salvati metadati convertiti per {converted_count} DOI in {CONVERTED_FILENAME}")
         
         # Salva un riepilogo dettagliato
         with open(SUMMARY_FILENAME, 'w', encoding='utf-8') as f:
             json.dump({
                 'summary': summary,
                 'timestamp': time.time(),
-                'total_results': len(results)
+                'total_results': len(results),
+                'converted_papers': converted_count
             }, f, indent=4)
         logging.info(f"Riepilogo salvato in {SUMMARY_FILENAME}")
         
@@ -492,6 +645,7 @@ def main():
         print(f"Controlla i file di output in: {OUTPUT_DIR}")
         print(f"- {os.path.basename(NOT_FOUND_FILENAME)}")
         print(f"- {os.path.basename(METADATA_FILENAME)}")
+        print(f"- {os.path.basename(CONVERTED_FILENAME)} (NUOVO FORMATO)")  # AGGIUNTO
         print(f"- {os.path.basename(SUMMARY_FILENAME)}")
         print(f"- {os.path.basename(CACHE_FILENAME)}")
         if test_retry_candidates:
@@ -511,6 +665,7 @@ def main():
                 remaining_results, remaining_metadata, remaining_not_found, remaining_success, remaining_failure, remaining_retry_candidates = process_batch(
                     entries, TEST_BATCH_SIZE, len(entries)
                 )
+
                 
                 # Combina i risultati
                 all_results = test_results + remaining_results
