@@ -56,8 +56,8 @@ cache_modified = False
 def parse_authors(author_string: str) -> List[Dict[str, str]]:
     """
     Converte la stringa degli autori nel formato desiderato.
-    Input: "Wang, Xiaonan; Zhang, Daoyong; Qian, Haifeng; ..."
-    Output: [{"name": "Xiaonan Wang", "org": ""}, ...]
+    Input: "Shi Wei,; Ma Xiang-Rong,; Xue Hong,; 1Department..."
+    Output: [{"name": "Wei Shi", "org": ""}, ...]
     """
     if not author_string:
         return []
@@ -66,48 +66,55 @@ def parse_authors(author_string: str) -> List[Dict[str, str]]:
     # Dividi per punto e virgola per separare gli autori
     author_parts = author_string.split(';')
     
+    # Parole che indicano inizio di affiliazioni
+    affiliation_indicators = {
+        'department', 'university', 'college', 'institute', 'laboratory', 
+        'school', 'center', 'centre', 'hospital', 'faculty', 'division',
+        'china', 'usa', 'uk', 'germany', 'france', 'japan', 'italy',
+        'state key', 'national', 'research'
+    }
+    
     for author_part in author_parts:
         author_part = author_part.strip()
         if not author_part:
             continue
         
-        # DEBUG: Mostra il nome originale
-        print(f"Nome originale: '{author_part}'")
+        # Rimuovi virgole finali che sono comuni nel formato OpenCitations
+        author_part = author_part.rstrip(',').strip()
         
-        # Rimuovi ORCID ID in tutti i formati possibili
-        # Formato completo: 0000-0000-0000-0000
-        # Formato incompleto: 0000-0002-3721-987 (3 gruppi)
-        # Formato con caratteri extra: _0000-0002-3721-987_
+        # STOP: Se questa parte contiene indicatori di affiliazione, fermati
+        author_lower = author_part.lower()
+        if any(indicator in author_lower for indicator in affiliation_indicators):
+            break  # Ferma il parsing qui, tutto il resto sono affiliazioni
+        
+        # STOP: Se contiene numeri che sembrano indirizzi/codici postali
+        if re.search(r'\d{4,}', author_part):  # 4+ cifre = probabilmente indirizzo
+            break
+            
+        # STOP: Se è troppo lungo per essere un nome
+        if len(author_part) > 50:  # I nomi raramente superano 50 caratteri
+            break
+        
+        # Rimuovi ORCID se presente
         author_part = re.sub(r'[,_\s]*\d{4}-\d{4}-\d{4}(?:-\d{1,4})?[X\d]?[,_\s]*', ' ', author_part)
-        
-        # Rimuovi eventuali caratteri speciali residui e spazi multipli
-        author_part = re.sub(r'[_]+', ' ', author_part)
         author_part = re.sub(r'\s+', ' ', author_part).strip()
         
-        print(f"Dopo pulizia ORCID: '{author_part}'")
-        
-        # Se contiene una virgola, assume formato "Cognome, Nome"
+        # Parsing del nome
         if ',' in author_part:
             parts = author_part.split(',', 1)
             if len(parts) == 2:
                 surname = parts[0].strip()
                 name = parts[1].strip()
-                
-                # Controlla se ci sono parti extra dopo il nome
-                # Es: "huang" rimasto dopo aver rimosso l'ORCID
                 if name and surname:
                     full_name = f"{name} {surname}"
                 else:
-                    # Se una parte è vuota, usa quella che non è vuota
                     full_name = (name or surname).strip()
             else:
                 full_name = author_part.strip()
         else:
             full_name = author_part.strip()
         
-        print(f"Nome finale: '{full_name}'")
-        
-        if full_name:
+        if full_name and len(full_name) > 2:  # Nome ragionevole
             authors.append({
                 "name": full_name,
                 "org": ""

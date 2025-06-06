@@ -62,7 +62,7 @@ def build_sna_valid_raw(sna_valid_pub):
     # Converte defaultdict in dict normale
     return dict(author_publications)
 
-def load_and_convert(input_file_path, output_file_path="results/converted_metadata_raw.json"):
+def load_and_convert(input_file_path, output_file_path=r"C:\Users\franc\OneDrive - Alma Mater Studiorum Università di Bologna\Desktop\BondforOC\results\converted_metadata_raw.json"):
     """
     Carica sna_valid_pub da file JSON e salva sna_valid_raw
     
@@ -202,4 +202,4 @@ if __name__ == "__main__":
         print(f"    -> Nome sicuro per file: ✓")
     
     print("\n=== Conversione del file reale ===")
-    load_and_convert(r'C:\Users\franc\OneDrive - Alma Mater Studiorum Università di Bologna\Desktop\BondforOC\results\OC_results\converted_metadata.json', '../results/converted_metadata_raw.json')
+    load_and_convert(r'C:\Users\franc\OneDrive - Alma Mater Studiorum Università di Bologna\Desktop\BondforOC\results\OC_results\converted_metadata.json')
