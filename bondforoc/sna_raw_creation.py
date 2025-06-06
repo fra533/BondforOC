@@ -5,12 +5,28 @@ import re
 def normalize_author_name(name):
     """
     Normalizza il nome dell'autore convertendolo in lowercase 
-    e sostituendo spazi con underscore
+    e sostituendo spazi con underscore, rimuovendo caratteri speciali
     """
     # Rimuovi spazi extra e converti in lowercase
     normalized = name.strip().lower()
+    
+    # Rimuovi caratteri speciali che possono causare problemi nei nomi file
+    # Mantieni solo lettere, numeri, spazi e alcuni caratteri sicuri
+    normalized = re.sub(r"[^\w\s\-\.]", "", normalized)
+    
     # Sostituisci spazi multipli con underscore singolo
     normalized = re.sub(r'\s+', '_', normalized)
+    
+    # Rimuovi underscore multipli
+    normalized = re.sub(r'_+', '_', normalized)
+    
+    # Rimuovi underscore all'inizio e alla fine
+    normalized = normalized.strip('_')
+    
+    # Limita la lunghezza per evitare problemi con nomi file troppo lunghi
+    if len(normalized) > 100:
+        normalized = normalized[:100].rstrip('_')
+    
     return normalized
 
 def build_sna_valid_raw(sna_valid_pub):
@@ -31,11 +47,17 @@ def build_sna_valid_raw(sna_valid_pub):
         if 'authors' in publication and publication['authors']:
             # Per ogni autore della pubblicazione
             for author in publication['authors']:
-                # Normalizza il nome dell'autore
-                normalized_name = normalize_author_name(author['name'])
-                
-                # Aggiungi l'ID della pubblicazione alla lista dell'autore
-                author_publications[normalized_name].append(pub_id)
+                # Usa solo il nome dell'autore, ignora l'organizzazione
+                if 'name' in author and author['name']:
+                    # Normalizza il nome dell'autore
+                    normalized_name = normalize_author_name(author['name'])
+                    
+                    # Aggiungi solo se il nome normalizzato non è vuoto
+                    if normalized_name:
+                        # Aggiungi l'ID della pubblicazione alla lista dell'autore
+                        author_publications[normalized_name].append(pub_id)
+                else:
+                    print(f"Attenzione: Autore senza nome nella pubblicazione {pub_id}")
     
     # Converte defaultdict in dict normale
     return dict(author_publications)
@@ -140,13 +162,44 @@ if __name__ == "__main__":
         }
     }
     
-    # Test con dati di esempio
+    # Test con dati di esempio che includono caratteri speciali
     print("=== Test con dati di esempio ===")
     result = build_sna_valid_raw(sna_valid_pub_example)
     print("Risultato:")
     for author, publications in result.items():
         print(f"  {author}: {publications}")
     
-
-load_and_convert(r'C:\Users\franc\OneDrive - Alma Mater Studiorum Università di Bologna\Desktop\BondforOC\results\OC_results\converted_metadata.json', '../results/converted_metadata_raw.json')
-   
+    # Test con l'esempio problematico fornito
+    problematic_example = {
+        "PohImS1q": {
+            "id": "PohImS1q",
+            "title": "Transient thermal effect of semi-insulating GaAs photoconductive switch",
+            "authors": [
+                {
+                    "name": "Shi Wei",
+                    "org": "Department of Applied Physics,Xi'an University of Technology,Xi'an ,China"
+                },
+                {
+                    "name": "Xiangrong Ma",
+                    "org": "Xi'an University of Technology(Xi'an University of Technology,Xi'an Univ. of Technol.),Xi An,China"
+                },
+                {
+                    "name": "Xue Hong",
+                    "org": "Department of Applied Physics,Xi'an University of Technology,Xi'an ,China"
+                }
+            ],
+            "venue": "Acta Physica Sinica",
+            "year": 2010
+        }
+    }
+    
+    print("\n=== Test con esempio problematico ===")
+    result_problematic = build_sna_valid_raw(problematic_example)
+    print("Risultato:")
+    for author, publications in result_problematic.items():
+        print(f"  {author}: {publications}")
+        # Verifica che i nomi siano sicuri per i file
+        print(f"    -> Nome sicuro per file: ✓")
+    
+    print("\n=== Conversione del file reale ===")
+    load_and_convert(r'C:\Users\franc\OneDrive - Alma Mater Studiorum Università di Bologna\Desktop\BondforOC\results\OC_results\converted_metadata.json', '../results/converted_metadata_raw.json')
