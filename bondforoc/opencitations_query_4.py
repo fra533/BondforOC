@@ -70,9 +70,21 @@ def parse_authors(author_string: str) -> List[Dict[str, str]]:
         author_part = author_part.strip()
         if not author_part:
             continue
-            
-        # Rimuovi ORCID ID se presente (formato: 0000-0000-0000-0000)
-        author_part = re.sub(r',?\s*\d{4}-\d{4}-\d{4}-\d{4}[X\d]?', '', author_part)
+        
+        # DEBUG: Mostra il nome originale
+        print(f"Nome originale: '{author_part}'")
+        
+        # Rimuovi ORCID ID in tutti i formati possibili
+        # Formato completo: 0000-0000-0000-0000
+        # Formato incompleto: 0000-0002-3721-987 (3 gruppi)
+        # Formato con caratteri extra: _0000-0002-3721-987_
+        author_part = re.sub(r'[,_\s]*\d{4}-\d{4}-\d{4}(?:-\d{1,4})?[X\d]?[,_\s]*', ' ', author_part)
+        
+        # Rimuovi eventuali caratteri speciali residui e spazi multipli
+        author_part = re.sub(r'[_]+', ' ', author_part)
+        author_part = re.sub(r'\s+', ' ', author_part).strip()
+        
+        print(f"Dopo pulizia ORCID: '{author_part}'")
         
         # Se contiene una virgola, assume formato "Cognome, Nome"
         if ',' in author_part:
@@ -80,11 +92,20 @@ def parse_authors(author_string: str) -> List[Dict[str, str]]:
             if len(parts) == 2:
                 surname = parts[0].strip()
                 name = parts[1].strip()
-                full_name = f"{name} {surname}"
+                
+                # Controlla se ci sono parti extra dopo il nome
+                # Es: "huang" rimasto dopo aver rimosso l'ORCID
+                if name and surname:
+                    full_name = f"{name} {surname}"
+                else:
+                    # Se una parte è vuota, usa quella che non è vuota
+                    full_name = (name or surname).strip()
             else:
                 full_name = author_part.strip()
         else:
             full_name = author_part.strip()
+        
+        print(f"Nome finale: '{full_name}'")
         
         if full_name:
             authors.append({
