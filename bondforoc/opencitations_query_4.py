@@ -56,8 +56,9 @@ cache_modified = False
 def parse_authors(author_string: str) -> List[Dict[str, str]]:
     """
     Converte la stringa degli autori nel formato desiderato.
-    Input: "Shi Wei,; Ma Xiang-Rong,; Xue Hong,; 1Department..."
-    Output: [{"name": "Wei Shi", "org": ""}, ...]
+    Input: "Shi Wei,; Ma Xiang-Rong,; Xue Hong,; 1Department...; Alice Johnson,;"
+    Output: [{"name": "Wei Shi", "org": ""}, {"name": "Xiang-Rong Ma", "org": ""}, 
+             {"name": "Hong Xue", "org": ""}, {"name": "Alice Johnson", "org": ""}]
     """
     if not author_string:
         return []
@@ -82,18 +83,18 @@ def parse_authors(author_string: str) -> List[Dict[str, str]]:
         # Rimuovi virgole finali che sono comuni nel formato OpenCitations
         author_part = author_part.rstrip(',').strip()
         
-        # STOP: Se questa parte contiene indicatori di affiliazione, fermati
+        # SKIP: Se questa parte contiene indicatori di affiliazione, saltala
         author_lower = author_part.lower()
         if any(indicator in author_lower for indicator in affiliation_indicators):
-            break  # Ferma il parsing qui, tutto il resto sono affiliazioni
+            continue  # Salta questo elemento, ma continua con il prossimo
         
-        # STOP: Se contiene numeri che sembrano indirizzi/codici postali
+        # SKIP: Se contiene numeri che sembrano indirizzi/codici postali
         if re.search(r'\d{4,}', author_part):  # 4+ cifre = probabilmente indirizzo
-            break
+            continue  # Cambiato da break a continue
             
-        # STOP: Se è troppo lungo per essere un nome
+        # SKIP: Se è troppo lungo per essere un nome
         if len(author_part) > 50:  # I nomi raramente superano 50 caratteri
-            break
+            continue  # Cambiato da break a continue
         
         # Rimuovi ORCID se presente
         author_part = re.sub(r'[,_\s]*\d{4}-\d{4}-\d{4}(?:-\d{1,4})?[X\d]?[,_\s]*', ' ', author_part)
