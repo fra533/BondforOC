@@ -7,7 +7,6 @@ Pipeline completa per l'estrazione, validazione e arricchimento di metadati bibl
 - [Panoramica](#panoramica)
 - [Requisiti](#requisiti)
 - [Struttura della Pipeline](#struttura-della-pipeline)
-- [Installazione](#installazione)
 - [Guida all'Uso](#guida-alluso)
 - [File di Output](#file-di-output)
 - [Statistiche Attese](#statistiche-attese)
@@ -286,31 +285,6 @@ python sna_raw_creation.py
 
 ---
 
-## 📦 Installazione
-
-### 1. Clona la Repository
-```bash
-git clone https://github.com/tuouser/BondforOC.git
-cd BondforOC
-```
-
-### 2. Crea Ambiente Virtuale
-```bash
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-venv\Scripts\activate     # Windows
-```
-
-### 3. Installa Dipendenze
-```bash
-pip install -r requirements.txt
-```
-
-### 4. Configura Token OpenCitations
-Apri `opencitations_query_4.py` e inserisci il tuo token:
-```python
-OPENCITATIONS_ACCESS_TOKEN = "IL-TUO-TOKEN-QUI"
-```
 
 ### 5. Prepara i Dati
 Posiziona i tuoi file in:
