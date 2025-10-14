@@ -1,3 +1,20 @@
+'''
+Questo modulo gestisce la conversione di metadati bibliografici da un formato 
+orientato alle pubblicazioni (sna_valid_pub) a un formato orientato agli autori 
+(sna_valid_raw). Il sistema normalizza i nomi degli autori per garantire coerenza 
+e compatibilità con i file system.
+
+Regole di Normalizzazione:
+    1. Conversione in lowercase
+    2. Rimozione abbreviazioni (es. "J." → "j")
+    3. Rimozione caratteri speciali
+    4. Estrazione primo nome e cognome
+    5. Formato finale: primo_nome_cognome
+    6. Limite lunghezza: 100 caratteri
+
+    '''
+
+
 import json
 from collections import defaultdict
 import re
@@ -5,25 +22,36 @@ import re
 def normalize_author_name(name):
     """
     Normalizza il nome dell'autore convertendolo in lowercase 
-    e sostituendo spazi con underscore, rimuovendo caratteri speciali
+    e sostituendo spazi con underscore, rimuovendo caratteri speciali.
+    Garantisce che il risultato abbia SEMPRE e SOLO un underscore (primo_nome_cognome).
     """
-    # Rimuovi spazi extra e converti in lowercase
     normalized = name.strip().lower()
     
-    # Rimuovi caratteri speciali che possono causare problemi nei nomi file
-    # Mantieni solo lettere, numeri, spazi e alcuni caratteri sicuri
-    normalized = re.sub(r"[^\w\s\-\.]", "", normalized)
+    normalized = re.sub(r'\b([a-z])\.\s*', r'\1 ', normalized)
     
-    # Sostituisci spazi multipli con underscore singolo
-    normalized = re.sub(r'\s+', '_', normalized)
+    normalized = re.sub(r'\.', '', normalized)
     
-    # Rimuovi underscore multipli
+    normalized = re.sub(r"[^\w\s\-]", "", normalized)
+    
+    normalized = re.sub(r'\s*-\s*', '-', normalized)
+    
+    normalized = re.sub(r'\s+', ' ', normalized).strip()
+    
+    parts = normalized.split()
+    
+    if len(parts) >= 2:
+        first_name = parts[0]
+        last_name = parts[-1]  
+        normalized = f"{first_name}_{last_name}"
+    elif len(parts) == 1:
+        normalized = f"unknown_{parts[0]}"
+    else:
+        normalized = "unknown_unknown"
+    
     normalized = re.sub(r'_+', '_', normalized)
     
-    # Rimuovi underscore all'inizio e alla fine
     normalized = normalized.strip('_')
     
-    # Limita la lunghezza per evitare problemi con nomi file troppo lunghi
     if len(normalized) > 100:
         normalized = normalized[:100].rstrip('_')
     
