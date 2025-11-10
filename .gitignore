@@ -4,3 +4,7 @@ results.json
 bondforoc/failed_responses.json
 bondforoc/success_responses.json
 results/
+scientometrics_complete_metadata.json
+scientometrics_complete.json
+diagnostic_venue.py
+test.py
