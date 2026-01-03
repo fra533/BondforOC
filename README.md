@@ -2,6 +2,8 @@
 
 Pipeline completa per l'estrazione, validazione e arricchimento di metadati bibliografici utilizzando Crossref e OpenCitations.
 
+<img src="C:\Users\franc\OneDrive - Alma Mater Studiorum Università di Bologna\Desktop\BondforOC\bondforoc\Gemini_Generated_Image_ap7suuap7suuap7s.png" alt="shot" style="zoom:50%;" />
+
 ## 📋 Indice
 
 - [Panoramica](#panoramica)
